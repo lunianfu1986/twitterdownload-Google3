@@ -5,7 +5,7 @@ import {
   Link as LinkIcon, 
   AlertCircle, 
   Play, 
-  Zap,
+  Zap, 
   Smartphone, 
   ShieldCheck, 
   Sparkles,
@@ -21,7 +21,7 @@ import {
   Menu
 } from 'lucide-react';
 import { TweetData, GeminiAnalysis } from './types';
-import { MOCK_TWEET_DATA, FAQ_ITEMS, FEATURES, PAGES_CONTENT } from './constants';
+import { FAQ_ITEMS, FEATURES, PAGES_CONTENT } from './constants';
 
 // --- Icons mapping for dynamic features ---
 const IconMap: Record<string, React.FC<any>> = {
@@ -69,22 +69,29 @@ export default function App() {
     setGeminiAnalysis(null);
 
     try {
-      let result;
-      try {
-        const response = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
-        if (!response.ok) throw new Error("API_FAIL");
-        result = await response.json();
-      } catch (err) {
-        console.warn("Backend API not reachable, using Mock Data for demo.");
-        await new Promise(r => setTimeout(r, 1500)); 
-        result = MOCK_TWEET_DATA;
+      // Connect to the Vercel Serverless Function
+      const response = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
+      
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Server error: Received non-JSON response.");
+      }
+
+      const result = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(result.error || `Server Error (${response.status})`);
       }
       
-      if (result.error) throw new Error(result.error);
+      if (!result.variants || result.variants.length === 0) {
+        throw new Error("No video found in this tweet.");
+      }
+      
       setData(result);
       
     } catch (err: any) {
-      setError(err.message || "Failed to download video. Please check the URL.");
+      console.error("Download Error:", err);
+      setError(err.message || "Failed to fetch video. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -507,7 +514,7 @@ export default function App() {
                             <div className="w-12 h-12 shrink-0 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold text-xl">4</div>
                             <div>
                                 <h3 className="text-xl font-bold mb-2">Save to Device</h3>
-                                <p className="text-slate-600">A list of available qualities (1080p, 720p, etc.) will appear. Click the "Download" button next to your preferred version. On iOS, you may need to tap "Share" > "Save Video" after the video opens.</p>
+                                <p className="text-slate-600">A list of available qualities (1080p, 720p, etc.) will appear. Click the "Download" button next to your preferred version. On iOS, you may need to tap "Share" &gt; "Save Video" after the video opens.</p>
                             </div>
                         </div>
                     </div>

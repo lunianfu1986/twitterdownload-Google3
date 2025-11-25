@@ -21,7 +21,7 @@ import {
   Menu
 } from 'lucide-react';
 import { TweetData, GeminiAnalysis } from './types';
-import { MOCK_TWEET_DATA, FAQ_ITEMS, FEATURES, PAGES_CONTENT } from './constants';
+import { FAQ_ITEMS, FEATURES, PAGES_CONTENT } from './constants';
 
 // --- Icons mapping for dynamic features ---
 const IconMap: Record<string, React.FC<any>> = {
@@ -69,22 +69,19 @@ export default function App() {
     setGeminiAnalysis(null);
 
     try {
-      let result;
-      try {
-        const response = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
-        if (!response.ok) throw new Error("API_FAIL");
-        result = await response.json();
-      } catch (err) {
-        console.warn("Backend API not reachable, using Mock Data for demo.");
-        await new Promise(r => setTimeout(r, 1500)); 
-        result = MOCK_TWEET_DATA;
+      // Connect to the Vercel Serverless Function
+      const response = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
+      const result = await response.json();
+      
+      if (!response.ok || result.error) {
+        throw new Error(result.error || "Failed to fetch video info");
       }
       
-      if (result.error) throw new Error(result.error);
       setData(result);
       
     } catch (err: any) {
-      setError(err.message || "Failed to download video. Please check the URL.");
+      console.error("Download Error:", err);
+      setError(err.message || "Failed to connect to server.");
     } finally {
       setLoading(false);
     }

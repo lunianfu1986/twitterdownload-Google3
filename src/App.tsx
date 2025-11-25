@@ -71,17 +71,24 @@ export default function App() {
     try {
       // Connect to the Vercel Serverless Function
       const response = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
+      
+      // Parse JSON
       const result = await response.json();
       
-      if (!response.ok || result.error) {
-        throw new Error(result.error || "Failed to fetch video info");
+      if (!response.ok) {
+        throw new Error(result.error || "Server returned an error.");
+      }
+      
+      if (result.error) {
+         throw new Error(result.error);
       }
       
       setData(result);
       
     } catch (err: any) {
       console.error("Download Error:", err);
-      setError(err.message || "Failed to connect to server.");
+      // Show user-friendly error
+      setError(err.message || "Failed to fetch video. Please check the URL or try again later.");
     } finally {
       setLoading(false);
     }

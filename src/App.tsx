@@ -5,7 +5,7 @@ import {
   Link as LinkIcon, 
   AlertCircle, 
   Play, 
-  Zap,
+  Zap, 
   Smartphone, 
   ShieldCheck, 
   Sparkles,
@@ -507,7 +507,7 @@ export default function App() {
                             <div className="w-12 h-12 shrink-0 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold text-xl">4</div>
                             <div>
                                 <h3 className="text-xl font-bold mb-2">Save to Device</h3>
-                                <p className="text-slate-600">A list of available qualities (1080p, 720p, etc.) will appear. Click the "Download" button next to your preferred version. On iOS, you may need to tap "Share" > "Save Video" after the video opens.</p>
+                                <p className="text-slate-600">A list of available qualities (1080p, 720p, etc.) will appear. Click the "Download" button next to your preferred version. On iOS, you may need to tap "Share" &gt; "Save Video" after the video opens.</p>
                             </div>
                         </div>
                     </div>

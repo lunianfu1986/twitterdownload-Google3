@@ -1,0 +1,2 @@
+// This file is deprecated in favor of api/index.js for Vercel deployment.
+// If you still need a standalone Express server (e.g. for VPS), you can use the code structure from api/index.js wrapped in express.

@@ -1,228 +1,252 @@
 const axios = require('axios');
 
-// The public Bearer Token used by the official Twitter Web Client
+// --- CONSTANTS ---
 const BEARER_TOKEN = 'AAAAAAPt4yAAAAAAAAAAAAAAAFQPCv4LookK7Ho5CM2F8M4L2n8%3D3vVWrw3M7x5I6nQ865d6rW411k4Z85f2r72e1d51';
 
-// Common GraphQL Query IDs (These rotate occasionally, having a fallback list helps)
-const GRAPHQL_FEATURES = {
-    "creator_subscriptions_tweet_preview_api_enabled": true,
-    "communities_web_enable_tweet_community_results_fetch": true,
-    "c9s_tweet_anatomy_moderator_badge_enabled": true,
-    "articles_preview_enabled": true,
-    "tweetypie_unmention_optimization_enabled": true,
-    "responsive_web_edit_tweet_api_enabled": true,
-    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": true,
-    "view_counts_everywhere_api_enabled": true,
-    "longform_notetweets_consumption_enabled": true,
-    "responsive_web_twitter_article_tweet_consumption_enabled": true,
-    "tweet_awards_web_tipping_enabled": false,
-    "freedom_of_speech_not_reach_fetch_enabled": true,
-    "standardized_nudges_misinfo": true,
-    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": true,
-    "rweb_video_timestamps_enabled": true,
-    "longform_notetweets_rich_text_read_enabled": true,
-    "longform_notetweets_inline_media_enabled": true,
-    "responsive_web_graphql_exclude_directive_enabled": true,
-    "verified_phone_label_enabled": false,
-    "responsive_web_media_download_video_enabled": false,
-    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-    "responsive_web_graphql_timeline_navigation_enabled": true,
-    "responsive_web_enhance_cards_enabled": false
+const COMMON_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
 };
 
+// --- HELPER: FORMAT DURATION ---
+const formatDuration = (ms) => {
+    if (!ms) return "0:00";
+    const totalSeconds = Math.floor(ms / 1000);
+    const min = Math.floor(totalSeconds / 60);
+    const sec = totalSeconds % 60;
+    return `${min}:${sec.toString().padStart(2, '0')}`;
+};
+
+// --- HELPER: CALCULATE SIZE ---
+const estimateSize = (bitrate, durationMs) => {
+    if (!bitrate || !durationMs) return "Unknown";
+    const durationSec = durationMs / 1000;
+    const sizeBytes = (bitrate * durationSec) / 8;
+    return (sizeBytes / (1024 * 1024)).toFixed(1) + ' MB';
+};
+
+// --- STRATEGY 1: GRAPHQL API (Guest Token) ---
+async function fetchGraphQLData(tweetId) {
+    console.log(`[GraphQL] Attempting to fetch Tweet ID: ${tweetId}`);
+
+    // 1. Get Guest Token
+    const guestTokenResponse = await axios.post('https://api.twitter.com/1.1/guest/activate.json', {}, {
+        headers: {
+            'Authorization': `Bearer ${BEARER_TOKEN}`,
+            ...COMMON_HEADERS
+        }
+    });
+    const guestToken = guestTokenResponse.data.guest_token;
+
+    // 2. Query GraphQL
+    const graphqlUrl = 'https://twitter.com/i/api/graphql/QuBlQ6bnvF7rS80nswghWg/TweetResultByRestId';
+    const variables = {
+        "tweetId": tweetId,
+        "withCommunity": false,
+        "includePromotedContent": false,
+        "withVoice": false
+    };
+    const features = {
+        "creator_subscriptions_tweet_preview_api_enabled": true,
+        "longform_notetweets_inline_media_enabled": true,
+        "responsive_web_graphql_exclude_directive_enabled": true,
+        "verified_phone_label_enabled": false,
+        "responsive_web_graphql_timeline_navigation_enabled": true,
+        "responsive_web_enhance_cards_enabled": false
+    };
+
+    const response = await axios.get(graphqlUrl, {
+        params: {
+            variables: JSON.stringify(variables),
+            features: JSON.stringify(features)
+        },
+        headers: {
+            'Authorization': `Bearer ${BEARER_TOKEN}`,
+            'x-guest-token': guestToken,
+            'content-type': 'application/json',
+            ...COMMON_HEADERS
+        }
+    });
+
+    const result = response.data?.data?.tweetResult?.result;
+    if (!result) throw new Error("GraphQL: No result found.");
+
+    // Parse Data
+    const legacy = result.legacy || result.tweet?.legacy;
+    const noteTweet = result.note_tweet?.note_tweet_results?.result;
+    const user = result.core?.user_results?.result?.legacy || result.tweet?.core?.user_results?.result?.legacy;
+
+    if (!legacy) throw new Error("GraphQL: Legacy data missing.");
+
+    const mediaArr = legacy.extended_entities?.media || legacy.entities?.media || [];
+    const videoMedia = mediaArr.find(m => m.type === 'video' || m.type === 'animated_gif');
+
+    if (!videoMedia) throw new Error("This tweet does not contain a video.");
+
+    // Extract Variants
+    const variants = (videoMedia.video_info?.variants || [])
+        .filter(v => v.content_type === 'video/mp4')
+        .map(v => {
+            let quality = 'SD';
+            const resMatch = v.url.match(/\/vid\/(\d+x\d+)\//);
+            if (resMatch) {
+                const h = parseInt(resMatch[1].split('x')[1]);
+                if (h >= 1080) quality = '1080p';
+                else if (h >= 720) quality = '720p';
+                else if (h >= 480) quality = '480p';
+                else quality = '360p';
+            }
+            return {
+                quality,
+                url: v.url,
+                format: 'mp4',
+                bitrate: v.bitrate,
+                size: estimateSize(v.bitrate, videoMedia.video_info?.duration_millis)
+            };
+        })
+        .sort((a, b) => b.bitrate - a.bitrate);
+
+    return {
+        id: tweetId,
+        text: noteTweet?.text || legacy.full_text,
+        author: user?.name || 'Unknown',
+        authorHandle: user?.screen_name ? `@${user.screen_name}` : '@unknown',
+        authorAvatar: user?.profile_image_url_https || '',
+        thumbnailUrl: videoMedia.media_url_https,
+        duration: formatDuration(videoMedia.video_info?.duration_millis),
+        timestamp: legacy.created_at,
+        variants
+    };
+}
+
+// --- STRATEGY 2: SYNDICATION API (Fallback) ---
+// This API is used for embedding tweets on websites and requires NO authentication.
+async function fetchSyndicationData(tweetId) {
+    console.log(`[Syndication] Attempting fallback fetch for Tweet ID: ${tweetId}`);
+    
+    const url = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en`;
+    
+    const response = await axios.get(url, { headers: COMMON_HEADERS });
+    const data = response.data;
+
+    if (!data) throw new Error("Syndication: No data returned.");
+
+    const videoInfo = data.video || (data.mediaDetails && data.mediaDetails.find(m => m.type === 'video' || m.type === 'animated_gif'));
+    
+    if (!videoInfo) throw new Error("This tweet does not contain a video.");
+
+    // Extract variants (Syndication structure is slightly different)
+    const variants = (videoInfo.variants || [])
+        .filter(v => v.type === 'video/mp4')
+        .map(v => {
+            let quality = 'SD';
+            // Syndication doesn't always have resolution in URL, sometimes uses 'src'
+            const src = v.src || v.url;
+            const resMatch = src.match(/\/vid\/(\d+x\d+)\//);
+            if (resMatch) {
+                const h = parseInt(resMatch[1].split('x')[1]);
+                if (h >= 1080) quality = '1080p';
+                else if (h >= 720) quality = '720p';
+                else if (h >= 480) quality = '480p';
+                else quality = '360p';
+            }
+            return {
+                quality,
+                url: src,
+                format: 'mp4',
+                // Syndication doesn't always give bitrate, use generic sort
+                bitrate: 0, 
+                size: 'Unknown' 
+            };
+        });
+    
+    // Sort by resolution guess if bitrate missing
+    variants.sort((a, b) => {
+        const getRes = (q) => parseInt(q) || 0;
+        return getRes(b.quality) - getRes(a.quality);
+    });
+
+    return {
+        id: data.id_str,
+        text: data.text,
+        author: data.user?.name || 'Unknown',
+        authorHandle: data.user?.screen_name ? `@${data.user.screen_name}` : '@unknown',
+        authorAvatar: data.user?.profile_image_url_https || '',
+        thumbnailUrl: data.photos?.[0]?.url || '',
+        duration: formatDuration(videoInfo.durationMs),
+        timestamp: data.created_at,
+        variants
+    };
+}
+
+// --- MAIN HANDLER ---
 module.exports = async (req, res) => {
-    // Enable CORS
+    // CORS
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-    res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    if (req.method === 'OPTIONS') {
-        res.status(200).end();
-        return;
-    }
+    if (req.method === 'OPTIONS') return res.status(200).end();
 
     const { url } = req.query;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
 
-    if (!url) {
-        return res.status(400).json({ error: 'URL is required' });
-    }
+    // Extract ID
+    const tweetIdMatch = url.match(/(?:twitter|x)\.com\/(?:.+)\/status\/(\d+)/);
+    const tweetId = tweetIdMatch ? tweetIdMatch[1] : null;
+
+    if (!tweetId) return res.status(400).json({ error: 'Invalid URL format.' });
 
     try {
-        // 1. Extract Tweet ID
-        const tweetIdMatch = url.match(/(?:twitter|x)\.com\/(?:.+)\/status\/(\d+)/);
-        const tweetId = tweetIdMatch ? tweetIdMatch[1] : null;
-
-        if (!tweetId) {
-            return res.status(400).json({ error: 'Invalid X/Twitter URL format.' });
-        }
-
-        console.log(`Processing Tweet ID: ${tweetId}`);
-
-        // 2. Get Guest Token
-        // The guest token is required to make read-only calls to the GraphQL API
-        const guestTokenResponse = await axios.post('https://api.twitter.com/1.1/guest/activate.json', {}, {
-            headers: {
-                'Authorization': `Bearer ${BEARER_TOKEN}`,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            }
-        });
-
-        const guestToken = guestTokenResponse.data.guest_token;
-        console.log("Guest Token obtained:", guestToken);
-
-        // 3. Call GraphQL API (TweetResultByRestId)
-        // This endpoint mimics the official web client request
-        const graphqlUrl = 'https://twitter.com/i/api/graphql/QuBlQ6bnvF7rS80nswghWg/TweetResultByRestId';
+        // Try Primary Strategy
+        const data = await fetchGraphQLData(tweetId);
         
-        const variables = {
-            "tweetId": tweetId,
-            "withCommunity": false,
-            "includePromotedContent": false,
-            "withVoice": false
-        };
-
-        const response = await axios.get(graphqlUrl, {
-            params: {
-                variables: JSON.stringify(variables),
-                features: JSON.stringify(GRAPHQL_FEATURES)
-            },
-            headers: {
-                'Authorization': `Bearer ${BEARER_TOKEN}`,
-                'x-guest-token': guestToken,
-                'x-twitter-active-user': 'yes',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'content-type': 'application/json'
-            }
-        });
-
-        const result = response.data?.data?.tweetResult?.result;
-
-        if (!result) {
-            throw new Error('Tweet data not found in GraphQL response');
+        // Add MP3 Option
+        if (data.variants.length > 0) {
+            data.variants.push({
+                quality: 'Audio Only',
+                url: data.variants[0].url,
+                format: 'mp3',
+                size: 'MP3',
+                bitrate: 0
+            });
         }
-
-        // 4. Parse the complex GraphQL Response
-        // Twitter wraps data differently depending on if it's a Note, a regular tweet, or has strict visibility
-        const legacy = result.legacy || result.tweet?.legacy;
-        const noteTweet = result.note_tweet?.note_tweet_results?.result;
-        const core = result.core || result.tweet?.core;
         
-        if (!legacy) {
-             // Sometimes it's a "Tombstone" (deleted/protected)
-             if (result.__typename === 'TweetTombstone') {
-                 return res.status(400).json({ error: 'This tweet is deleted or protected.' });
-             }
-             throw new Error('Could not parse legacy tweet data.');
-        }
+        return res.json(data);
 
-        const text = noteTweet?.text || legacy.full_text;
-        const user = core?.user_results?.result?.legacy;
-        const authorName = user?.name || 'Unknown';
-        const authorHandle = user?.screen_name ? `@${user.screen_name}` : '@unknown';
-        const authorAvatar = user?.profile_image_url_https || '';
-        const timestamp = legacy.created_at;
+    } catch (primaryError) {
+        console.warn("Primary strategy failed:", primaryError.message);
 
-        // 5. Extract Media
-        // Media can be in 'extended_entities' or inside 'note_tweet'
-        const mediaArr = legacy.extended_entities?.media || legacy.entities?.media || [];
-        
-        let variants = [];
-        let duration = "0:00";
-        let thumbnailUrl = "";
-
-        // Find the video media object
-        const videoMedia = mediaArr.find(m => m.type === 'video' || m.type === 'animated_gif');
-
-        if (videoMedia) {
-            thumbnailUrl = videoMedia.media_url_https;
+        try {
+            // Try Fallback Strategy
+            const data = await fetchSyndicationData(tweetId);
             
-            // Calc duration
-            if (videoMedia.video_info?.duration_millis) {
-                const ms = videoMedia.video_info.duration_millis;
-                const min = Math.floor(ms / 60000);
-                const sec = ((ms % 60000) / 1000).toFixed(0);
-                duration = `${min}:${sec.padStart(2, '0')}`;
+             // Add MP3 Option
+            if (data.variants.length > 0) {
+                data.variants.push({
+                    quality: 'Audio Only',
+                    url: data.variants[0].url,
+                    format: 'mp3',
+                    size: 'MP3',
+                    bitrate: 0
+                });
             }
 
-            // Parse variants
-            const rawVariants = videoMedia.video_info?.variants || [];
+            return res.json(data);
+
+        } catch (fallbackError) {
+            console.error("Fallback strategy failed:", fallbackError.message);
             
-            variants = rawVariants
-                .filter(v => v.content_type === 'video/mp4') // We only want MP4s
-                .map(v => {
-                    let quality = 'SD';
-                    // Try to extract resolution from URL (e.g., .../vid/1280x720/...)
-                    const resMatch = v.url.match(/\/vid\/(\d+x\d+)\//);
-                    if (resMatch) {
-                        const [w, h] = resMatch[1].split('x').map(Number);
-                        if (h >= 1080) quality = '1080p';
-                        else if (h >= 720) quality = '720p';
-                        else if (h >= 480) quality = '480p';
-                        else quality = '360p';
-                    } else {
-                        // Fallback using bitrate
-                        if (v.bitrate > 2000000) quality = '1080p';
-                        else if (v.bitrate > 800000) quality = '720p';
-                    }
-
-                    // Estimate size
-                    const bitrate = v.bitrate || 0;
-                    const durationSec = (videoMedia.video_info?.duration_millis || 0) / 1000;
-                    const sizeBytes = (bitrate * durationSec) / 8;
-                    const sizeMB = sizeBytes > 0 ? (sizeBytes / (1024 * 1024)).toFixed(1) + ' MB' : 'Unknown';
-
-                    return {
-                        quality,
-                        url: v.url,
-                        size: sizeMB,
-                        format: 'mp4',
-                        bitrate: v.bitrate
-                    };
-                })
-                .sort((a, b) => b.bitrate - a.bitrate); // Best quality first
-
-            // Add Audio Option
-            if (variants.length > 0) {
-                 variants.push({
-                     quality: 'Audio Only',
-                     url: variants[0].url,
-                     size: 'MP3',
-                     format: 'mp3',
-                     bitrate: 0
-                 });
+            // Determine user-friendly error
+            let msg = "Failed to fetch video.";
+            if (fallbackError.message.includes("does not contain a video")) {
+                msg = "This tweet does not contain a video or GIF.";
+            } else if (fallbackError.response?.status === 404) {
+                msg = "Tweet not found. Check if the account is private.";
             }
-        } else {
-             // Fallback: Check if it's just an image or text
-             if (mediaArr.length > 0) {
-                 thumbnailUrl = mediaArr[0].media_url_https;
-             }
-             return res.status(400).json({ 
-                 error: 'This tweet does not contain a video or GIF. It might be an image or text-only tweet.' 
-             });
+
+            return res.status(500).json({ error: msg });
         }
-
-        // 6. Return Data
-        return res.json({
-            id: tweetId,
-            text,
-            author: authorName,
-            authorHandle,
-            authorAvatar,
-            thumbnailUrl,
-            duration,
-            timestamp,
-            variants
-        });
-
-    } catch (error) {
-        console.error('Full Error:', error);
-        
-        // Detailed error for frontend
-        const errorMsg = error.response?.data?.errors?.[0]?.message || error.message;
-        
-        res.status(500).json({ 
-            error: `Failed to fetch video: ${errorMsg}. Try checking if the account is private.` 
-        });
     }
 };
